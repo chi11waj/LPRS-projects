@@ -1,0 +1,354 @@
+		
+/*
+// Ekvivalentan C kod:
+short frames_cnt = 0;
+short frames_per_heartbeat = 75; // 75 for synth, 1 for sim.
+short* p_segments = 0x180;
+short* p_frame_sync = 0x140;
+*/
+
+.data
+
+5		;; 0 Lakse kretanje kroz data i za proveru za zuto    
+0		;; 1 Frame_cnt                                        
+75		;; 2 Frames_per_heartbeats                              
+0x180		;; 3 VHDL top deo koji hvata other za 7SEG
+0x140		;; 4 Frame_sync
+1		;; 5 Desetica za sev-seg privremena 
+5		;; 6 Jedinica za sev-seg privremena
+1		;; 7 Desetica za sev-seg za resetovanje
+5		;; 8 Jedinica za sev-seg za resetovanje
+0xFFFF		;; 9 Status   crveno-0  zeleno-nz	      ;; Prvo sam koristio 1 za crveno, a 0 za zeleno. Vrtelo je crveno zuto u beskonacnom loopu i skontao sam da negiranjem 1 u resetu 
+							      ;; Od vrednosti 1 koja je zapravo 0000000000000001 dobija 1111111111111110, u status signalu
+							      ;; Uslov za zeleno svetlo mi je da je signal statusa jednak 0,a negiran 16-bitni kec nije 000000000000000000 nego 11111111111111110
+.text
+
+/*
+	Spisak registara:
+	R0 - registar za setanje kroz data i cuvanje izlaznog signala od 16 bita
+	
+	Signal je tipa:
+	
+	red yellow green |       empty       |  cifra desetice | cifra jedinice
+	 0    0      0   | 0   0   0   0   0 |  0   0   0   0  | 0   0   0   0
+	 15   14     13  | 12  11  10  9   8 |  7   6   5   4  | 3   2   1   0   
+
+	R1 - temp
+	R2 - free
+	R3 - cifra desetice
+	R4 - cifra jedinice
+	R5 - 9 za reset jedinica na seven-seg
+	R6 - p_frame_sync
+	R7 - p_segments
+*/
+
+begin:
+	;; Setup pointers
+	inc R0, R0                  	
+	inc R0, R0                  	
+	inc R0, R0                  	;; Pomeramo se kroz data sekciju na 3 mesto 
+	ld  R7, R0                  	;; Ucitavamo 0x300 u R7 koji je za p_segments
+	inc R0, R0                  	;; Pomeramo se kroz data sekciju na 4 mesto
+	ld  R6, R0                  	;; Ucitavamo 0x340 u R6 koji je za p_frame_sync
+	
+	shl R0, R0			;; Siftovanjem se povecava vrednost sa 4 na 8
+	inc R5, R0                  	;; Inkrementom dobijamo 8+1=9 i to upisujemo u R5 
+
+frame_sync_rising_edge:
+frame_sync_wait_0:
+	ld R0, R6                   	;; R0 <- p_frame_sync
+	jmpnz frame_sync_wait_0
+frame_sync_wait_1: 
+	ld R0, R6                   	;; R0 <- p_frame_sync
+	jmpz frame_sync_wait_1
+
+;; Deo koji se vrti 75 puta i postavlja outpute na shield
+
+;; Deo za ucitavanje cifara brojaca, njihovo pretvaranje u broj
+
+	sub R0, R0, R0			;; Vracamo R0 na 0
+	inc R0, R0			;; Pomeramo se na 6 adresu u data sekciji
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	ld  R3, R0			;; Ucitavamo privremenu deseticu za brojac u R3
+	inc R0, R0			;; Pomeramo se jedno mesto napred
+	ld  R4, R0			;; Ucitavamo privremenu jedinicu za brojac u R4
+
+	sub R1, R1, R1			;; Vracamo R1 na 0
+	add R1, R1, R3			;; Ucitavam 10 puta vrednost desetice u R1 
+	add R1, R1, R3			;; da bi dobili deseticu i jednom vrednost jedinica
+	add R1, R1, R3			
+	add R1, R1, R3
+	add R1, R1, R3
+	add R1, R1, R3
+	add R1, R1, R3
+	add R1, R1, R3
+	add R1, R1, R3
+	add R1, R1, R3
+	add R1, R1, R4			;; Vrednost brojaca sa seven-seg je sacuvana u R1
+
+;; Provera za zuto svetlo
+
+	sub R0, R0, R0			;; R0 postavimo na 0 i inkrementujemo 5 puta kako bi dobili 5
+	inc R0, R0	
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	sub R2, R1, R0			;; Oduzimamo od vrednosti brojaca 5 i ako je to jednako 0
+	jmpz pre_zuto_svetlo		;; Skacemo na podesavanje za zuto svetlo
+	jmps pre_zuto_svetlo
+	
+;; Provera za crveno i zeleno svetlo
+
+	sub R2, R2, R2			;; Postavimo R2 na 0
+	sub R0, R0, R0			;; Postavimo R0 na 0 i pomeramo se kroz data do 9 vrednosti (sa 0 na 9, 8 incrementa)
+	inc R0, R0			;; Koja oznacava signalnu vrednost za paljenje crvene ili zelene diode
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+        ld  R2, R0			;; Ucitavamo tu vrednost u R2
+	jmpnz crveno_svetlo		;; Ako se ucitalo 1 to je znak za crveno svetlo
+	jmpz zeleno_svetlo		;; Ako se ucitalo 0 to je znak za zeleno svetlo
+					
+crveno_svetlo:
+
+	sub R0, R0, R0			;; Postavljamo R0 na 0 jer cemo u njega cuvati output signal, menjamo na 1 i sifrujemo 2 puta
+	inc R0, R0			;; Tako dobijamo sledece : red yellow green (1 0 0)
+	shl R0, R0
+	shl R0, R0
+	jmp broj
+
+;; ----------------------------------------             
+;;    0  0  0  0  0  0 0 0 0 0 0 0 0 1 0 0      
+;;   15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0
+;;   r  y  g               d d d d j j j j
+;; ----------------------------------------
+	
+pre_zuto_svetlo:
+
+	sub R2, R2, R2			;; Postavimo R2 na 0
+	sub R0, R0, R0			;; Postavimo R0 na 0 i pomeramo se kroz data do 9 vrednosti (sa 0 na 9, 8 incrementa)
+	inc R0, R0			;; Koja oznacava signalnu vrednost za paljenje crvene ili zelene diode
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+        ld  R2, R0			;; Ucitavamo tu vrednost u R2
+
+	jmpnz crveno_zuto_svetlo	;; Ako se ucitalo 1 to je znak za crveno svetlo
+	jmpz zeleno_zuto_svetlo		;; Ako se ucitalo 0 to je znak za zeleno svetlo
+
+crveno_zuto_svetlo:
+
+	sub R0, R0, R0			
+	inc R0, R0			;; Tako dobijamo sledece : red yellow green (1 1 0)
+	shl R0, R0
+	inc R0, R0                                                                         ;; -------------------------------------
+	shl R0, R0
+	jmp broj
+
+;; ----------------------------------------             
+;;    0  0  0  0  0  0 0 0 0 0 0 0 0 0 1 0       
+;;   15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0
+;;   r  y  g               d d d d j j j j
+;; ----------------------------------------	
+
+zeleno_zuto_svetlo:
+
+	sub R0, R0, R0			
+	inc R0, R0			;; Tako dobijamo sledece : red yellow green (0 1 1)
+	shl R0, R0
+	inc R0, R0                                                                         ;; -------------------------------------
+	jmp broj
+
+zeleno_svetlo:				
+
+	sub R0, R0, R0			;; Postavljamo R0 na 0, menjamo na 1 i ne siftujemo
+	inc R0, R0			;; Tako dobijamo sledece : red yellow green (0 0 1)
+
+;; ----------------------------------------             
+;;    0  0  0  0  0  0 0 0 0 0 0 0 0 0 0 1      
+;;   15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0
+;;   r  y  g               d d d d j j j j
+;; ----------------------------------------	
+
+
+broj:
+	shl R0, R0		    	;; Pomerili smo se u sekcijama crveno zuto i zeleno dovoljan broj puta
+	shl R0, R0		    	;; Sada se pomeramo 5 puta za pet slobodnih bitova
+	shl R0, R0		    	;; I zatim jos 4 puta za bitove u koje smetamo desetice		   
+	shl R0, R0
+	shl R0, R0
+	shl R0, R0
+	shl R0, R0
+	shl R0, R0				   
+	shl R0, R0
+	or  R0, R0, R3            	;; Popunjavanje desetica gde se iz R3 u koje             
+	shl R0, R0		   	;; je ucitano 1 sa or ubacuje u R0   
+	shl R0, R0		        ;; Siftujemo 4 puta da se napravi mesto za jedinice	                       
+	shl R0, R0                             
+	shl R0, R0		    
+	or  R0, R0, R4 		        ;; Ubacuje se 5 iz R4 sa or u R0
+
+	st  R0, R7		        ;; Upisujemo dobijeno 16-bitni signal na adresu iz R7 ,a to je 0x300
+
+;; Crveno svetlo
+;; ----------------------------------------             
+;;    0  0  0  0  0  0 0 0 1 0 0 0 0 0 0 0      
+;;   15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0
+;;   r  y  g               d d d d j j j j
+;; ----------------------------------------
+
+;; ----------------------------------------             
+;;    0  0  0  0  1  0 0 0 0 0 0 0 0 0 0 1      
+;;   15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0
+;;   r  y  g               d d d d j j j j
+;; ----------------------------------------	
+
+;;  crveno sv.    prazno        1       5
+;; ------------------------------------------             
+;;    1  0  0 | 0  0  0 0 0 |0 0 0 1 |0 1 0 1     
+;;   15 14 13 |12 11 10 9 8 |7 6 5 4 |3 2 1 0
+;;   r  y  g  |             |d d d d |j j j j
+;; ------------------------------------------	
+
+
+;; Zuto svetlo
+;; ----------------------------------------             
+;;    0  0  0  0  0  0 0 0 0 1 0 0 0 0 0 0      
+;;   15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0
+;;   r  y  g               d d d d j j j j
+;; ----------------------------------------
+
+;; ----------------------------------------             
+;;    0  0  0  0  0  1 0 0 0 0 0 0 0 0 0 0      
+;;   15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0
+;;   r  y  g               d d d d j j j j
+;; ----------------------------------------	
+
+;;  zuto sv.    prazno        	0        4
+;; ------------------------------------------             
+;;    0  1  0 | 0  0  0 0 0 |0 0 0 0 |0 1 0 0     
+;;   15 14 13 |12 11 10 9 8 |7 6 5 4 |3 2 1 0
+;;   r  y  g  |             |d d d d |j j j j
+;; ------------------------------------------	
+
+
+;; Zeleno svetlo
+;; ----------------------------------------             
+;;    0  0  0  0  0  0 0 0 0 0 1 0 0 0 0 0      
+;;   15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0
+;;   r  y  g               d d d d j j j j
+;; ----------------------------------------
+
+;; ----------------------------------------             
+;;    0  0  0  0  0  0 1 0 0 0 0 0 0 0 0 0      
+;;   15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0
+;;   r  y  g               d d d d j j j j
+;; ----------------------------------------	
+
+;;  zeleno sv.    prazno        1       4
+;; ------------------------------------------             
+;;    0  0  1 | 0  0  0 0 0 |0 0 0 1 |0 1 0 0     
+;;   15 14 13 |12 11 10 9 8 |7 6 5 4 |3 2 1 0
+;;   r  y  g  |             |d d d d |j j j j
+;; ------------------------------------------	
+
+count_frames_begin:
+	sub R0, R0, R0              	;; Postavljamo R0 na prvu adresu u data
+	inc R0, R0		    	;; Idemo jedno mesto napred
+	ld R1, R0                   	;; Iz data kupimo 0 i cuvamo u R1 <- frame_cnt
+	inc R0, R0		    	;; Idemo jos jedno mesto napred
+	ld R2, R0                   	;; Iz data kupimo 75 i cuvamo u R2 <- frame_per_heartbeat
+	dec R0, R0		    	;; Smanjimo R0 i vracamo na poslu adresu
+	inc R1, R1                  	;; Povecavamo frame_cnt++ sa 0 na 1 i tako redom, ali posto je u loop-u povecava do 75
+	sub R2, R2, R1              	;; Oduzimamo od 75 vrednost brojaca frame_cnt (frame_cnt == frames_per_heartbeat)
+	jmpz count_frames_heatbeat  	;; Ako je 0 skace se tj. ako je izbrojalo do 75
+	st R1, R0                   	;; Ako nije uzima frame_cnt koji je odbrojao i cuva ga kao novu vrednost u data
+	jmp frame_sync_rising_edge
+count_frames_heatbeat:
+	sub R1, R1, R1		    	;; Vraca se vrednost frame_cnt na 0
+	st R1, R0                   	;; Upisuje se resetovan frame_cnt na adresu R0
+count_frames_end:
+
+;; Deo u kome se vrse izmene pre novog prikazivanja posle 75 taktova
+
+	sub R0, R0, R0			;; Vracamo R0 na 0
+	inc R0, R0			;; Pomeramo se na 5 adresu u data sekciji
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	ld  R3, R0			;; Ucitavamo privremenu deseticu za brojac u R3
+	inc R0, R0			;; Pomeramo se jedno mesto napred
+	ld  R4, R0			;; Ucitavamo privremenu jedinicu za brojac u R4
+
+	dec R4, R4  			;; Smanjimo jedinice za jedan
+	jmps reset_desetica_i_jedinica  ;; Ako odemo u minus znaci da jedinice treba da resetujemo na 9,a desetice na 0             
+	st  R4, R0			;; Ako ne sacuvamo novu vrednost jedinica i pocinjamo opet
+	jmp frame_sync_rising_edge
+
+reset_desetica_i_jedinica:
+	mov R4, R5           		;; Ucitavamo 9 iz R5 u jedinice   
+	st  R4, R0			;; Cuvamo resetovanu vrednost jedinica
+	dec R3, R3			;; Zatim smanjujemo i desetice 
+	jmpns store_desetica		;; Ako ne udjemo u minus treba sacuvati resetovanu vrednost desetica
+
+reset_brojaca:				;; Labela do koje se dolazi ako resetovanjem desetica uspadne u minus tj. ako brojac na seven-seg
+					;; Dodje sa 1|5 na 0|0 pokusace resetovati jedinice i smanjiti desetice (0|9) smanjivanjem desetica upada
+					;; U minus (-1|9) i ako se upali sign flag znaci da je potreban reset brojaca jer je seven-seg odbrojao do 0
+	sub R0, R0, R0			;; Ako udjemo u minus oduzimanje desetica stavlja se R0 na 0
+	inc R0, R0			;; Pomeramo se na mesto jedinice za reset desetica
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0			
+	inc R0, R0			
+	ld  R2, R0			;; Cuvamo vrednost koja je na 8 adresi, a to je desetica za resetovanje brojaca u R2
+	dec R0, R0			;; Vracamo se dva mesta nazad
+	dec R0, R0
+	st  R2, R0			;; Upisujemo resetovanu vrednost za desetice na adresu R0 (ponovo postavljamo 1 na desetice za sev-seg privremenu)
+	sub R2, R2, R2			;; Vracamo R2 na 0
+	inc R0, R0			;; Pomeramo se na mesto petice za reset jedinica
+	inc R0, R0
+	inc R0, R0			
+	ld  R2, R0			;; Cuvamo vrednost koja je na 9 adresi, a to je jedinica za resetovanje brojaca u R2
+	dec R0, R0			;; Vracamo se dva mesta nazad
+	dec R0, R0
+	st  R2, R0			;; Upisujemo resetovanu vrednost za jedinice na adresu R0 (ponovo postavljamo 5 na jedinice za sev-seg privremenu)
+
+menjanje_status_signala:		;; Potrebno je promeniti i status signal jer kada odbroji crveno-zuto od 15 do 0 treba da upali zeleno-zuto i broji
+					;; Ponovo od 15 do 0
+	sub R0, R0, R0			;; Stavljamo R0 na 0
+	sub R2, R2, R2
+	inc R0, R0			;; Skacemo na status signal koji oznacava signalnu vrednost za paljenje crvene ili zelene diode
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+	inc R0, R0
+        ld  R2, R0			;; Ucitavamo tu vrednost u R2
+	not R2, R2			;; Negiramo R2 tako da od 0->1 i od 1->0 i to radimo jer ako je brojac stigao do 0                       --izmena
+	st  R2, R0			;; Treba umesto c.s. paliti z.s. i obrnuto
+	jmp frame_sync_rising_edge
+
+store_desetica:                
+	dec R0, R0			;; Vracamo se jednu adresu nazad
+	st  R3, R0			;; Cuvamo resetovanu vrednost desetica
+	jmp frame_sync_rising_edge	;; Ako sacuvamo novu vrednost desetica pocinjamo opet
